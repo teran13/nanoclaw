@@ -27,9 +27,24 @@ describe('formatLocalTime', () => {
   it('does not throw on invalid timezone, falls back to UTC', () => {
     expect(() => formatLocalTime('2026-01-01T00:00:00.000Z', 'IST-2')).not.toThrow();
     const result = formatLocalTime('2026-01-01T12:00:00.000Z', 'IST-2');
-    // Should format as UTC (noon UTC = 12:00 PM)
+    // Should format as UTC (noon UTC = 12:00 PM, a Thursday)
     expect(result).toContain('12:00');
     expect(result).toContain('PM');
+    expect(result).toContain('Thursday');
+  });
+
+  it('names the weekday, so a reader never has to derive it from the date', () => {
+    // 2026-02-04 is a Wednesday.
+    expect(formatLocalTime('2026-02-04T18:30:00.000Z', 'America/New_York')).toContain('Wednesday');
+  });
+
+  it('names the local weekday, not the UTC one', () => {
+    // 23:00Z lands on a different calendar day — and a different weekday — in
+    // each of these zones, so a weekday derived from the instant instead of the
+    // localized date would be wrong for one of them.
+    const utc = '2026-06-15T23:00:00.000Z';
+    expect(formatLocalTime(utc, 'America/New_York')).toContain('Monday');
+    expect(formatLocalTime(utc, 'Asia/Tokyo')).toContain('Tuesday');
   });
 });
 
