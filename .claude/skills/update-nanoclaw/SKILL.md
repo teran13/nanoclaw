@@ -31,6 +31,8 @@ Run `/update-nanoclaw` in Claude Code.
 
 **Conflict resolution**: opens only conflicted files, resolves the conflict markers, keeps your local customizations intact.
 
+**Silent-drop audit**: git only conflicts when both sides touch the same lines, so a merge can quietly remove customizations that sat in a region upstream restructured. After the update lands, `scripts/merge-audit.ts` reports every line the update removed that upstream did not itself remove, and the update stops there until you have looked at them.
+
 **Validation**: runs `pnpm run build` and `pnpm test`. If container files changed, also runs the container typecheck and `./container/build.sh`.
 
 **Breaking changes check**: after validation, reads CHANGELOG.md for any `[BREAKING]` entries introduced by the update. If found, shows each breaking change, reads its migration skill or guide, and offers the recommended migration.
@@ -183,6 +185,28 @@ If conflicts:
 If it gets messy (more than 3 rounds of conflicts):
   - `git rebase --abort`
   - Recommend merge instead.
+
+# Step 4.4: Silent-drop audit (required after any update path)
+git only raises a conflict when both sides touch the same lines. Where upstream restructured a region this install had added to, the merge succeeds and the local lines are simply gone — no conflict markers, and Step 5 still passes, because nothing is left referencing what was removed. The install then runs with pieces of its own behavior missing. Highest risk, because customizations cluster there:
+
+- `container/agent-runner/src/index.ts` — secret injection, hooks, MCP server building
+- `src/container-runner.ts` — credential scoping, mount building, container args
+- `src/index.ts` — session management, thread isolation, model override
+
+Run the audit before the build, whichever update path was taken:
+- `pnpm exec tsx scripts/merge-audit.ts <backup-tag-from-step-1> upstream/$UPSTREAM_BRANCH`
+
+It reports, per file, the lines this update removed that upstream did not itself remove — so a deletion upstream asked for stays quiet, and one nobody asked for does not. Exit codes:
+- `0` — nothing to review. Proceed to Step 4.5.
+- `1` — findings. Do not build yet.
+- `2` — the audit could not run (usually a ref that does not resolve). Fix and re-run. Never read this as a clean result.
+
+For each reported line:
+- Show it to the user with its file, and open `git diff <backup-tag-from-step-1>..HEAD -- <file>` only if the line alone is not enough to judge.
+- If it was a local customization, re-add it **into the merged structure**. Do not revert the merge or restore the old file wholesale — upstream's restructure is the version being kept.
+- A line the user just resolved away in a conflict is expected to appear here. Confirm it was deliberate; do not restore it silently.
+
+Re-run the audit after any restoration. Proceed to Step 4.5 only once it exits `0` or every remaining finding has been explicitly accepted by the user; carry the accepted list into the Step 8 summary.
 
 # Step 4.5: Install dependencies (if lockfiles changed)
 Check if the merge changed any lockfiles or package manifests:
