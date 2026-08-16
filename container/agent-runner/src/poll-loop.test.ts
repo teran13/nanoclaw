@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './db/connection.js';
 import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
+import { getTokenUsage } from './db/session-state.js';
+import { getTurnLog } from './db/usage-log.js';
 import { formatMessages, extractRouting } from './formatter.js';
 import { isCorruptionError, processQuery } from './poll-loop.js';
 import { MockProvider } from './providers/mock.js';
@@ -480,6 +482,105 @@ describe('isCorruptionError', () => {
     expect(isCorruptionError('database is locked')).toBe(false);
     expect(isCorruptionError('no such table: messages_in')).toBe(false);
     expect(isCorruptionError('')).toBe(false);
+  });
+});
+
+describe('token usage accounting (real processQuery)', () => {
+  it('banks the turn usage the provider reported', async () => {
+    const { query } = makeResultQuery({
+      type: 'result',
+      text: '<message to="a">hi</message>',
+      usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 7, cacheCreationTokens: 3, costUsd: 0.02 },
+    });
+
+    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+
+    expect(getTokenUsage()).toMatchObject({
+      input_tokens: 100,
+      output_tokens: 20,
+      cache_read_tokens: 7,
+      cache_creation_tokens: 3,
+      cost_usd: 0.02,
+      turns: 1,
+    });
+  });
+
+  it('banks an errored turn too — it burned tokens all the same', async () => {
+    const { query } = makeResultQuery({
+      type: 'result',
+      text: 'Spending limit reached.',
+      isError: true,
+      usage: { inputTokens: 9, outputTokens: 1 },
+    });
+
+    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+
+    expect(getTokenUsage()).toMatchObject({ input_tokens: 9, output_tokens: 1, turns: 1 });
+  });
+
+  it('a provider that reports no usage leaves no total behind', async () => {
+    // Recording a zeroed turn here would claim the session was free, and
+    // every provider but Claude currently reports nothing.
+    const { query } = makeResultQuery({ type: 'result', text: '<message to="a">hi</message>' });
+
+    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+
+    expect(getTokenUsage()).toBeNull();
+  });
+
+  it('logs the prompt the turn answered, with what that turn cost', async () => {
+    const { query } = makeResultQuery({
+      type: 'result',
+      text: '<message to="a">hi</message>',
+      usage: { inputTokens: 100, outputTokens: 20, costUsd: 0.02 },
+    });
+
+    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'how much have we spent', undefined);
+
+    const log = getTurnLog();
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatchObject({
+      prompt_preview: 'how much have we spent',
+      input_tokens: 100,
+      output_tokens: 20,
+      cost_usd: 0.02,
+      task_series_id: null,
+    });
+  });
+
+  it('logs the prompt of an unmeasured turn as well — it still ran', async () => {
+    const { query } = makeResultQuery({ type: 'result', text: '<message to="a">hi</message>' });
+
+    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'unmeasured', undefined);
+
+    const log = getTurnLog();
+    expect(log).toHaveLength(1);
+    expect(log[0].prompt_preview).toBe('unmeasured');
+    expect(log[0].input_tokens).toBeNull();
+  });
+
+  it('attributes a task run to its series', async () => {
+    const { query } = makeResultQuery({
+      type: 'result',
+      text: 'run complete',
+      usage: { inputTokens: 5, costUsd: 0.001 },
+    });
+
+    await processQuery(
+      query,
+      { ...TASK_ROUTING, taskSeriesId: 'daily-briefing-a25c' },
+      ['t1'],
+      'claude',
+      undefined,
+      'Send the daily briefing',
+      undefined,
+    );
+
+    expect(getTurnLog()[0]).toMatchObject({
+      task_series_id: 'daily-briefing-a25c',
+      prompt_preview: 'Send the daily briefing',
+      cost_usd: 0.001,
+    });
   });
 });
 
