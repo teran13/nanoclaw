@@ -57,6 +57,8 @@ CREATE INDEX idx_messages_in_series ON messages_in(series_id);
 
 Content shapes: see [api-details.md §Session DB Schema Details](api-details.md#session-db-schema-details).
 
+**`id` is not the platform message ID.** The host writes `<platform_message_id>:<agent_group_id>` (`messageIdForAgent()` in `src/router.ts`), because one inbound message fanned out to several agent groups would otherwise collide on this PRIMARY KEY. Anything handing the ID back to a platform — reactions, edits — must strip that suffix first: `stripAgentGroupSuffix()` in `container/agent-runner/src/db/messages-out.ts`. Strip at the end, never at the first colon; platform IDs contain their own (`6037840640:42` on Telegram).
+
 **Writers (host):** `insertMessage()` (and `nextEvenSeq()`) in `src/db/session-db.ts`; `insertTask()` and `insertRecurrence()` in `src/modules/scheduling/db.ts`. Each calls `nextEvenSeq()`.
 **Reader (container):** `container/agent-runner/src/db/messages-in.ts` — polls `status='pending' AND (process_after IS NULL OR process_after <= now)`.
 

@@ -4,6 +4,7 @@
  * Writes to outbound.db (container-owned).
  * The host polls this DB (read-only) for undelivered messages.
  */
+import { loadConfig } from '../config.js';
 import { getInboundDb, getOutboundDb } from './connection.js';
 
 export interface MessageOutRow {
@@ -78,24 +79,43 @@ export function writeMessageOut(msg: WriteMessageOut): number {
 }
 
 /**
+ * Undo the ":<agent_group_id>" the host appends to inbound row IDs.
+ *
+ * Anchored at the end, and only for this session's own group: platform IDs
+ * contain colons of their own ("6037840640:42" on Telegram), so cutting at the
+ * first one would hand the platform half an ID. An ID without the suffix, or
+ * with some other group's, is left exactly as it is.
+ */
+export function stripAgentGroupSuffix(id: string, agentGroupId: string): string {
+  if (!agentGroupId) return id;
+  const suffix = `:${agentGroupId}`;
+  return id.endsWith(suffix) ? id.slice(0, -suffix.length) : id;
+}
+
+/**
  * Look up a message's platform ID by seq number.
  * Searches both inbound and outbound DBs since seq spans both.
  *
- * For inbound messages, the Chat SDK message ID is already the platform message ID
- * (e.g., "6037840640:42" for Telegram).
+ * For inbound messages the row ID is the platform message ID plus the routing
+ * suffix the host added; that suffix comes back off here.
  *
  * For outbound messages, the internal ID (msg-xxx) won't work for edits/reactions.
  * Instead, look up the platform_message_id from the delivered table (host writes this
  * after successful delivery).
  */
-export function getMessageIdBySeq(seq: number): string | null {
+export function getMessageIdBySeq(
+  seq: number,
+  agentGroupId: string = loadConfig().agentGroupId,
+): string | null {
   const inbound = getInboundDb();
 
-  // Inbound messages: ID is already the platform message ID
+  // Inbound rows carry ":<agent_group_id>" so a fan-out to several agent groups
+  // doesn't collide on the messages_in.id PRIMARY KEY (messageIdForAgent in
+  // src/router.ts). The platform never saw that composite — strip it back off.
   const inRow = inbound.prepare('SELECT id FROM messages_in WHERE seq = ?').get(seq) as
     | { id: string }
     | undefined;
-  if (inRow) return inRow.id;
+  if (inRow) return stripAgentGroupSuffix(inRow.id, agentGroupId);
 
   // Outbound messages: look up platform message ID from delivered table
   const outRow = getOutboundDb().prepare('SELECT id FROM messages_out WHERE seq = ?').get(seq) as
