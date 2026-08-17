@@ -17,10 +17,9 @@ import type {
   ProviderOptions,
   QueryInput,
 } from './types.js';
+import { createLogger } from '../log.js';
 
-function log(msg: string): void {
-  console.error(`[claude-provider] ${msg}`);
-}
+const log = createLogger('claude-provider');
 
 export interface SdkRateLimitInfo {
   status?: string;
@@ -250,7 +249,7 @@ const preToolUseHook: HookCallback = async (input) => {
   try {
     setContainerToolInFlight(toolName, declaredTimeoutMs);
   } catch (err) {
-    log(`PreToolUse: failed to record container_state: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn(`PreToolUse: failed to record container_state: ${err instanceof Error ? err.message : String(err)}`);
   }
   return { continue: true };
 };
@@ -260,7 +259,7 @@ const postToolUseHook: HookCallback = async () => {
   try {
     clearContainerToolInFlight();
   } catch (err) {
-    log(`PostToolUse: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn(`PostToolUse: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
   }
   return { continue: true };
 };
@@ -276,7 +275,7 @@ function archiveTranscriptFile(
   assistantName?: string,
 ): boolean {
   if (!transcriptPath || !fs.existsSync(transcriptPath)) {
-    log('No transcript found for archiving');
+    log.info('No transcript found for archiving');
     return false;
   }
 
@@ -313,10 +312,10 @@ function archiveTranscriptFile(
     // hours, and the agent navigates conversations/ by these date prefixes.
     const filename = `${formatLocalStamp(new Date(), TIMEZONE).slice(0, 10)}-${name}.md`;
     fs.writeFileSync(path.join(conversationsDir, filename), formatTranscriptMarkdown(messages, summary, assistantName));
-    log(`Archived conversation to ${filename}`);
+    log.info(`Archived conversation to ${filename}`);
     return true;
   } catch (err) {
-    log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }
@@ -541,7 +540,7 @@ export class ClaudeProvider implements AgentProvider {
     try {
       fs.renameSync(transcriptPath, `${transcriptPath}.rotated-${Date.now()}`);
     } catch (err) {
-      log(`Failed to move rotated transcript aside: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`Failed to move rotated transcript aside: ${err instanceof Error ? err.message : String(err)}`);
     }
     return reason;
   }
@@ -649,7 +648,7 @@ export class ClaudeProvider implements AgentProvider {
           if (!blocked) {
             // Informational ('allowed' / 'allowed_warning') — never kill the turn.
             if (info?.status === 'allowed_warning') {
-              log(
+              log.info(
                 `rate-limit warning: ${info.rateLimitType ?? 'window'} at ${
                   info.utilization != null ? `${Math.round(info.utilization * 100)}%` : 'high'
                 } utilization`,
@@ -666,14 +665,14 @@ export class ClaudeProvider implements AgentProvider {
           // block, so it triggers the "response was not delivered — please
           // re-send" nudge and the agent duplicates its previous message.
           // Compaction is bookkeeping: log it, count it as activity only.
-          log(`Context compacted${detail}.`);
+          log.info(`Context compacted${detail}.`);
           yield { type: 'activity' };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
           const tn = message as { summary?: string };
           yield { type: 'progress', message: tn.summary || 'Task notification' };
         }
       }
-      log(`Query completed after ${messageCount} SDK messages`);
+      log.info(`Query completed after ${messageCount} SDK messages`);
     }
 
     return {

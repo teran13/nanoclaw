@@ -258,7 +258,7 @@ Check these first when something goes wrong:
 | Setup logs | `logs/setup.log` (overall), `logs/setup-steps/*.log` (per-step: bootstrap, environment, container, onecli, mounts, service, etc.) |
 | Session DBs | `data/v2-sessions/<agent-group>/<session>/` — `inbound.db` (`messages_in`: did the message reach the container?), `outbound.db` (`messages_out`: did the agent produce a response?) |
 
-Note: container logs are lost after the container exits (`--rm` flag). If the agent silently failed inside the container, there's no persistent log to inspect.
+Note: container logs are lost after the container exits (`--rm` flag), so the host log is the persistent record. The container marks each stderr line `[tag] LEVEL message` and the host promotes `WARN`/`ERROR` into its own log — so a container-side failure lands in `logs/nanoclaw.error.log`. Container `INFO`/`DEBUG` stays at host debug: to see it, run the host with `LOG_LEVEL=debug`.
 
 ## Timestamps
 
@@ -316,6 +316,7 @@ The agent container runs on **Bun**; the host runs on **Node** (pnpm). They comm
 - **Adding or bumping a runtime dep in `container/agent-runner/`** → edit `package.json`, then `cd container/agent-runner && bun install` and commit the updated `bun.lock`. Do not run `pnpm install` there — agent-runner is not a pnpm workspace.
 - **Bumping `@anthropic-ai/claude-agent-sdk`, `@modelcontextprotocol/sdk`, or any agent-runner runtime dep** → no `minimumReleaseAge` policy applies to this tree. Check the release date on npm, pin deliberately, never `bun update` blindly.
 - **Writing a new named-param SQL insert/update in the container** → use `$name` in both SQL and JS keys: `.run({ $id: msg.id })`. `bun:sqlite` does not auto-strip the prefix the way `better-sqlite3` does on the host. Positional `?` params work normally.
+- **Adding a log line in the container** → `createLogger('<tag>')` from `container/agent-runner/src/log.ts`, never a bare `console.error`. The level is a contract: only `warn` and `error` reach the operator's `logs/nanoclaw.error.log` (via `classifyContainerLogLine` host-side), `info`/`debug` are effectively invisible. See [docs/agent-runner-details.md](docs/agent-runner-details.md#logging).
 - **Adding a test in `container/agent-runner/src/`** → import from `bun:test`, not `vitest`. Vitest runs on Node and can't load `bun:sqlite`. `vitest.config.ts` excludes this tree.
 - **Adding a Node CLI the agent invokes at runtime** (like `agent-browser`, `claude-code`, `vercel`) → put it in the Dockerfile's pnpm global-install block, pinned to an exact version via a new `ARG`. Don't use `bun install -g` — that bypasses the pnpm supply-chain policy.
 - **Changing the Dockerfile entrypoint or the dynamic-spawn command** (`src/container-runner.ts` line ~503) → keep `exec bun ...` so signals forward cleanly. The image has no `/app/dist`; don't reintroduce a tsc build step.

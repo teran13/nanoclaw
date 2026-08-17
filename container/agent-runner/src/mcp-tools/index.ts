@@ -10,12 +10,11 @@ import './interactive.js';
 import './agents.js';
 import './self-mod.js';
 import { startMcpServer } from './server.js';
+import { createLogger } from '../log.js';
 
-function log(msg: string): void {
-  console.error(`[mcp-tools] ${msg}`);
-}
+const log = createLogger('mcp-tools');
 
 startMcpServer().catch((err) => {
-  log(`MCP server error: ${err instanceof Error ? err.message : String(err)}`);
+  log.error(`MCP server error: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 });

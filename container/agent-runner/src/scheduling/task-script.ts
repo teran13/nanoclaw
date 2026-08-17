@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { MessageInRow } from '../db/messages-in.js';
 import { touchHeartbeat } from '../db/connection.js';
+import { createLogger } from '../log.js';
 
 const SCRIPT_TIMEOUT_MS = 30_000;
 const SCRIPT_MAX_BUFFER = 1024 * 1024;
@@ -12,9 +13,7 @@ export interface ScriptResult {
   data?: unknown;
 }
 
-function log(msg: string): void {
-  console.error(`[task-script] ${msg}`);
-}
+const log = createLogger('task-script');
 
 export async function runScript(script: string, taskId: string): Promise<ScriptResult | null> {
   const scriptPath = path.join('/tmp', `task-script-${taskId}.sh`);
@@ -33,30 +32,30 @@ export async function runScript(script: string, taskId: string): Promise<ScriptR
         }
 
         if (stderr) {
-          log(`[${taskId}] stderr: ${stderr.slice(0, 500)}`);
+          log.info(`[${taskId}] stderr: ${stderr.slice(0, 500)}`);
         }
 
         if (error) {
-          log(`[${taskId}] error: ${error.message}`);
+          log.warn(`[${taskId}] error: ${error.message}`);
           return resolve(null);
         }
 
         const lines = stdout.trim().split('\n');
         const lastLine = lines[lines.length - 1];
         if (!lastLine) {
-          log(`[${taskId}] no output`);
+          log.info(`[${taskId}] no output`);
           return resolve(null);
         }
 
         try {
           const result = JSON.parse(lastLine);
           if (typeof result.wakeAgent !== 'boolean') {
-            log(`[${taskId}] output missing wakeAgent boolean: ${lastLine.slice(0, 200)}`);
+            log.info(`[${taskId}] output missing wakeAgent boolean: ${lastLine.slice(0, 200)}`);
             return resolve(null);
           }
           resolve(result as ScriptResult);
         } catch {
-          log(`[${taskId}] output is not valid JSON: ${lastLine.slice(0, 200)}`);
+          log.info(`[${taskId}] output is not valid JSON: ${lastLine.slice(0, 200)}`);
           resolve(null);
         }
       },
@@ -105,19 +104,23 @@ export async function applyPreTaskScripts(messages: MessageInRow[]): Promise<Tas
       continue;
     }
 
-    log(`running script for task ${msg.id}`);
+    log.info(`running script for task ${msg.id}`);
     touchHeartbeat();
     const result = await runScript(script, msg.id);
     touchHeartbeat();
 
     if (!result || !result.wakeAgent) {
       const reason: ScriptSkipReason = result ? 'gated' : 'error';
-      log(`task ${msg.id} skipped: ${reason === 'gated' ? 'wakeAgent=false' : 'script error/no output'}`);
+      // A gate saying no is the script working. A gate that failed to run
+      // drops the task silently, which the operator wants to hear about.
+      const line = `task ${msg.id} skipped: ${reason === 'gated' ? 'wakeAgent=false' : 'script error/no output'}`;
+      if (reason === 'gated') log.info(line);
+      else log.warn(line);
       skipped.push({ id: msg.id, reason });
       continue;
     }
 
-    log(`task ${msg.id} wakeAgent=true, enriching prompt`);
+    log.info(`task ${msg.id} wakeAgent=true, enriching prompt`);
     content.scriptOutput = result.data ?? null;
     keep.push({ ...msg, content: JSON.stringify(content) });
   }

@@ -37,10 +37,9 @@ import { createProvider, type ProviderName } from './providers/factory.js';
 import { resolvePluginServer } from './plugin-mcp.js';
 import type { McpServerConfig } from './providers/types.js';
 import { runPollLoop } from './poll-loop.js';
+import { createLogger } from './log.js';
 
-function log(msg: string): void {
-  console.error(`[agent-runner] ${msg}`);
-}
+const log = createLogger('agent-runner');
 
 const CWD = '/workspace/agent';
 
@@ -48,7 +47,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const providerName = config.provider.toLowerCase() as ProviderName;
 
-  log(`Starting v2 agent-runner (provider: ${providerName})`);
+  log.info(`Starting v2 agent-runner (provider: ${providerName})`);
 
   // Every provider shares one persistent memory tree. Legacy imports are an
   // operator-run migration and never happen in this normal startup path.
@@ -77,7 +76,7 @@ async function main(): Promise<void> {
       }
     }
     if (additionalDirectories.length > 0) {
-      log(`Additional directories: ${additionalDirectories.join(', ')}`);
+      log.info(`Additional directories: ${additionalDirectories.join(', ')}`);
     }
   }
 
@@ -98,7 +97,7 @@ async function main(): Promise<void> {
     // Plugin-shipped servers get ${PLUGIN_ROOT}/${PLUGIN_DATA} expansion and
     // the two injected env vars; everything else passes through untouched.
     mcpServers[name] = resolvePluginServer(serverConfig);
-    log(
+    log.info(
       serverConfig.type === 'http'
         ? `Additional MCP server: ${name} (HTTP)`
         : `Additional MCP server: ${name} (${serverConfig.command})`,
@@ -124,6 +123,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  log(`Fatal error: ${err instanceof Error ? err.message : String(err)}`);
+  log.error(`Fatal error: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 });

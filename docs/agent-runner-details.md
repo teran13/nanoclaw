@@ -789,7 +789,37 @@ The provider name comes from the `provider` key in `/workspace/agent/container.j
 - The MCP server binary is shared across providers — same tools, same DB access
 - CLAUDE.md loading (global + per-group) — agent-runner reads and passes as `systemPrompt`
 - Additional directories discovery (`/workspace/extra/*`)
-- Logging via stderr (`[agent-runner] ...`)
+- Logging via stderr, `[tag] LEVEL message` (see below)
+
+## Logging
+
+The container writes every log line to stderr through `createLogger(tag)`
+(`container/agent-runner/src/log.ts`); nothing calls `console.error` directly.
+Each line is rendered `[tag] LEVEL message`, with the prefix repeated on every
+line of a multi-line message.
+
+That marker is a contract with the host. `classifyContainerLogLine()` in
+`src/container-runner.ts` reads the container's stderr and routes `WARN` and
+`ERROR` to the matching host level, so they reach `logs/nanoclaw.error.log`.
+Everything else — `INFO`, `DEBUG`, and any unmarked line — stays at host
+`debug`, which the default `info` threshold drops.
+
+Two things to know when adding a log line:
+
+- **Pick the level deliberately.** `info` is bookkeeping the operator does not
+  need; it is invisible in normal operation and only shows up under
+  `LOG_LEVEL=debug` or in `docker logs`. Reserve `warn` and `error` for things
+  that cost the user something — a message that was not delivered, a turn that
+  failed, a task silently dropped.
+- **The container has no threshold of its own.** It emits everything and the
+  host decides. A level here is a claim about severity, not about volume.
+
+Container `INFO` is deliberately not promoted to host `info`: it is per-poll
+bookkeeping from every live session, and forwarding it would bury the host's own
+log. Unmarked lines are deliberately not sniffed for the word "error" either —
+this stream also carries output from child processes the runner inherits (the
+provider CLI and friends), so sniffing would let arbitrary agent-adjacent text
+into the operator's error log.
 
 ## Related Documents
 

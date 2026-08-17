@@ -13,10 +13,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import type { McpToolDefinition } from './types.js';
+import { createLogger } from '../log.js';
 
-function log(msg: string): void {
-  console.error(`[mcp-tools] ${msg}`);
-}
+const log = createLogger('mcp-tools');
 
 const allTools: McpToolDefinition[] = [];
 const toolMap = new Map<string, McpToolDefinition>();
@@ -24,7 +23,7 @@ const toolMap = new Map<string, McpToolDefinition>();
 export function registerTools(tools: McpToolDefinition[]): void {
   for (const t of tools) {
     if (toolMap.has(t.tool.name)) {
-      log(`Warning: tool "${t.tool.name}" already registered, skipping duplicate`);
+      log.warn(`tool "${t.tool.name}" already registered, skipping duplicate`);
       continue;
     }
     allTools.push(t);
@@ -50,5 +49,5 @@ export async function startMcpServer(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log(`MCP server started with ${allTools.length} tools: ${allTools.map((t) => t.tool.name).join(', ')}`);
+  log.info(`MCP server started with ${allTools.length} tools: ${allTools.map((t) => t.tool.name).join(', ')}`);
 }

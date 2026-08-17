@@ -14,10 +14,9 @@
 import { writeMessageOut } from '../db/messages-out.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
+import { createLogger } from '../log.js';
 
-function log(msg: string): void {
-  console.error(`[mcp-tools] ${msg}`);
-}
+const log = createLogger('mcp-tools');
 
 function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -61,7 +60,7 @@ export const createAgent: McpToolDefinition = {
       }),
     });
 
-    log(`create_agent: ${requestId} → "${name}"`);
+    log.info(`create_agent: ${requestId} → "${name}"`);
     return ok(`Creating agent "${name}". You will be notified when it is ready.`);
   },
 };

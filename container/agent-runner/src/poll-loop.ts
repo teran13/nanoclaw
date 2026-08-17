@@ -28,6 +28,7 @@ import {
 import { stripHarnessTagArtifacts } from './harness-tag-strip.js';
 import { isUploadTraceCommand, uploadTrace } from './upload-trace.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';
+import { createLogger } from './log.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
@@ -56,9 +57,7 @@ export function isCorruptionError(msg: string): boolean {
   );
 }
 
-function log(msg: string): void {
-  console.error(`[poll-loop] ${msg}`);
-}
+const log = createLogger('poll-loop');
 
 function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -109,14 +108,14 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   if (continuation) {
     const rotateReason = config.provider.maybeRotateContinuation?.(continuation, config.cwd);
     if (rotateReason) {
-      log(`Rotating session — ${rotateReason}; starting fresh`);
+      log.info(`Rotating session — ${rotateReason}; starting fresh`);
       clearContinuation(config.providerName);
       continuation = undefined;
     }
   }
 
   if (continuation) {
-    log(`Resuming agent session ${continuation}`);
+    log.info(`Resuming agent session ${continuation}`);
   }
 
   // Clear leftover 'processing' acks from a previous crashed container.
@@ -134,7 +133,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     // Periodic heartbeat so we know the loop is alive
     if (pollCount % 30 === 0) {
-      log(`Poll heartbeat (${pollCount} iterations, ${messages.length} pending)`);
+      log.info(`Poll heartbeat (${pollCount} iterations, ${messages.length} pending)`);
     }
 
     if (messages.length === 0) {
@@ -168,7 +167,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     for (const msg of messages) {
       if ((msg.kind === 'chat' || msg.kind === 'chat-sdk') && isClearCommand(msg)) {
-        log('Clearing session (resetting continuation)');
+        log.info('Clearing session (resetting continuation)');
         continuation = undefined;
         clearContinuation(config.providerName);
         writeMessageOut({
@@ -185,7 +184,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       // isSessionEcho guard: a copied "/upload-trace" from another session is
       // ambient context, never a runner command (isClearCommand self-guards).
       if ((msg.kind === 'chat' || msg.kind === 'chat-sdk') && !isSessionEcho(msg) && isUploadTraceCommand(msg)) {
-        log('Uploading session trace to Hugging Face');
+        log.info('Uploading session trace to Hugging Face');
         writeMessageOut({
           id: generateId(),
           kind: 'chat',
@@ -207,7 +206,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (normalMessages.length === 0) {
       const remainingIds = ids.filter((id) => !commandIds.includes(id));
       if (remainingIds.length > 0) markCompleted(remainingIds);
-      log(`All ${messages.length} message(s) were commands, skipping query`);
+      log.info(`All ${messages.length} message(s) were commands, skipping query`);
       continue;
     }
 
@@ -225,12 +224,12 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     skipped = preTask.skipped;
     if (skipped.length > 0) {
       markScriptSkipped(skipped);
-      log(`Pre-task script skipped ${skipped.length} task(s): ${skipped.map((s) => s.id).join(', ')}`);
+      log.info(`Pre-task script skipped ${skipped.length} task(s): ${skipped.map((s) => s.id).join(', ')}`);
     }
     // MODULE-HOOK:scheduling-pre-task:end
 
     if (keep.length === 0) {
-      log(`All ${normalMessages.length} non-command message(s) gated by script, skipping query`);
+      log.info(`All ${normalMessages.length} non-command message(s) gated by script, skipping query`);
       continue;
     }
 
@@ -238,7 +237,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // provider natively handles slash commands), others get XML.
     const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
 
-    log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
+    log.info(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
 
     const query = config.provider.query({
       prompt,
@@ -280,13 +279,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      log(`Query error: ${errMsg}`);
+      log.error(`Query error: ${errMsg}`);
 
       // Stale/corrupt continuation recovery: ask the provider whether
       // this error means the stored continuation is unusable, and clear
       // it so the next attempt starts fresh.
       if (continuation && config.provider.isSessionInvalid(err)) {
-        log(`Stale session detected (${continuation}) — clearing for next retry`);
+        log.info(`Stale session detected (${continuation}) — clearing for next retry`);
         continuation = undefined;
         clearContinuation(config.providerName);
       }
@@ -304,7 +303,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       // The batch is still acked completed below (no redelivery). Without
       // this line the only log trace of the errored turn is "Query error"
       // followed by a "Completed" line that reads like success.
-      log(`Errored batch will be acked completed — ${processingIds.length} message(s), no redelivery`);
+      log.warn(`Errored batch will be acked completed — ${processingIds.length} message(s), no redelivery`);
     } finally {
       clearCurrentInReplyTo();
       config.signal?.removeEventListener('abort', abortActiveQuery);
@@ -313,7 +312,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // Ensure completed even if processQuery ended without a result event
     // (e.g. stream closed unexpectedly).
     markCompleted(processingIds);
-    log(`Completed ${ids.length} message(s)`);
+    log.info(`Completed ${ids.length} message(s)`);
   }
 }
 
@@ -447,7 +446,7 @@ export async function processQuery(
         // can block the command (e.g. /clear during a long task) for as
         // long as the turn takes.
         if (pending.some((m) => isRunnerCommand(m))) {
-          log('Pending slash command — aborting active stream so outer loop can process');
+          log.info('Pending slash command — aborting active stream so outer loop can process');
           endedForCommand = true;
           query.abort();
           return;
@@ -489,7 +488,7 @@ export async function processQuery(
         skipped = preTask.skipped;
         if (skipped.length > 0) {
           markScriptSkipped(skipped);
-          log(`Pre-task script skipped ${skipped.length} follow-up task(s): ${skipped.map((s) => s.id).join(', ')}`);
+          log.info(`Pre-task script skipped ${skipped.length} follow-up task(s): ${skipped.map((s) => s.id).join(', ')}`);
         }
         // MODULE-HOOK:scheduling-pre-task-followup:end
 
@@ -501,7 +500,7 @@ export async function processQuery(
 
         const keptIds = keep.map((m) => m.id);
         const prompt = formatMessages(keep);
-        log(`Pushing ${keep.length} follow-up message(s) into active query`);
+        log.info(`Pushing ${keep.length} follow-up message(s) into active query`);
         unwrappedNudged = false;
         taskBlockNudged = false;
         query.push(prompt);
@@ -513,7 +512,7 @@ export async function processQuery(
         // path is wrapped by processQuery's outer try/catch; the follow-up
         // path is not, so it needs its own.
         const errMsg = err instanceof Error ? err.message : String(err);
-        log(`Follow-up poll error: ${errMsg}`);
+        log.error(`Follow-up poll error: ${errMsg}`);
 
         // Detect SQLite cross-mount corruption (Docker Desktop macOS virtiofs /
         // gRPC-FUSE coherency bug — the kernel page cache for the inbound.db
@@ -524,7 +523,7 @@ export async function processQuery(
         if (isCorruptionError(errMsg)) {
           corruptionStreak += 1;
           if (corruptionStreak >= CORRUPTION_STREAK_EXIT) {
-            log(
+            log.info(
               `Follow-up poll: ${corruptionStreak} consecutive '${errMsg}' errors — ` +
                 `inbound.db page cache is poisoned. Exiting so host respawns with a fresh mount.`,
             );
@@ -693,25 +692,25 @@ function notifyExchangeComplete(
   try {
     hook(exchange);
   } catch (err) {
-    log(`onExchangeComplete failed: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn(`onExchangeComplete failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
 function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
   switch (event.type) {
     case 'init':
-      log(`Session: ${event.continuation}`);
+      log.info(`Session: ${event.continuation}`);
       break;
     case 'result':
-      log(`Result: ${event.text ? event.text.slice(0, 200) : '(empty)'}`);
+      log.info(`Result: ${event.text ? event.text.slice(0, 200) : '(empty)'}`);
       break;
     case 'error':
-      log(
+      log.info(
         `Error: ${event.message} (retryable: ${event.retryable}${event.classification ? `, ${event.classification}` : ''})`,
       );
       break;
     case 'progress':
-      log(`Progress: ${event.message}`);
+      log.info(`Progress: ${event.message}`);
       break;
   }
 }
@@ -724,7 +723,7 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
  * `Error:` prefix — the provider's text is already a user-facing message.
  */
 function deliverErrorResult(text: string, routing: RoutingContext): void {
-  log('Error result with no <message> envelope — delivering to channel');
+  log.warn('Error result with no <message> envelope — delivering to channel');
   writeMessageOut({
     id: generateId(),
     in_reply_to: routing.inReplyTo,
@@ -840,7 +839,7 @@ export function deliverMidTurnBlocks(
   const settled = input.slice(0, tailStart);
   const tail = input.slice(tailStart);
   if (tail && carry !== tail) {
-    log(`Mid-turn scan: carrying ${tail.length}-char unresolved tail to the next segment`);
+    log.info(`Mid-turn scan: carrying ${tail.length}-char unresolved tail to the next segment`);
   }
   // Seq high-water mark at THIS scan's start: the echo check below only
   // looks at rows written by EARLIER segments of the same turn — a verbatim
@@ -861,7 +860,7 @@ export function deliverMidTurnBlocks(
     // Never deliver a blank message: a body that is empty (or was only
     // harness-tag artifacts) is skipped here; the result path logs it.
     if (!body) {
-      log(`Mid-turn <message to="${toName}"> empty after sanitization — skipped`);
+      log.info(`Mid-turn <message to="${toName}"> empty after sanitization — skipped`);
       continue;
     }
     // Cross-segment echo guard (live-captured shape, SDK battery s03): after
@@ -874,12 +873,12 @@ export function deliverMidTurnBlocks(
     // earlier segment ⇒ echo, skip. No in-process content ledger; cross-turn
     // repeats are out of the window and deliver normally.
     if (turnStartSeq !== undefined && wasWrittenInSeqWindow(dest, body, turnStartSeq, segStartSeq)) {
-      log(`Mid-turn <message to="${toName}"> is a verbatim repeat of a message already sent this turn — skipped`);
+      log.info(`Mid-turn <message to="${toName}"> is a verbatim repeat of a message already sent this turn — skipped`);
       continue;
     }
     sendToDestination(dest, body, routing);
     delivered++;
-    log(`Mid-turn delivery: <message to="${toName}"> (${body.length} chars)`);
+    log.info(`Mid-turn delivery: <message to="${toName}"> (${body.length} chars)`);
   }
   return { delivered, tail };
 }
@@ -956,7 +955,7 @@ function chatRowWrittenSince(afterSeq: number): boolean {
       .get(afterSeq);
     return row !== undefined && row !== null;
   } catch (err) {
-    log(`chatRowWrittenSince failed: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn(`chatRowWrittenSince failed: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }
@@ -987,7 +986,7 @@ function wasWrittenInSeqWindow(dest: DestinationEntry, body: string, afterSeq: n
     // The guard is an anti-duplication refinement; if the lookup itself
     // fails, fall through to delivery (the write will surface any real DB
     // breakage loudly).
-    log(`Echo-guard lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn(`Echo-guard lookup failed: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }
@@ -1035,7 +1034,7 @@ export function dispatchResultText(
     // agent already made (the double-delivery class) or a send down the wrong
     // path — never deliver it, keep it visible in the scratchpad/run log.
     if (routing.taskRun) {
-      log(`Task run: <message to="${toName}"> block not delivered — task sessions send only via explicit tools`);
+      log.info(`Task run: <message to="${toName}"> block not delivered — task sessions send only via explicit tools`);
       scratchpadParts.push(
         `[not delivered — task sessions send only via the send_message tool; to="${toName}"] ${body}`,
       );
@@ -1044,7 +1043,7 @@ export function dispatchResultText(
     }
     const dest = findByName(toName);
     if (!dest) {
-      log(`Unknown destination in <message to="${toName}">, dropping block`);
+      log.warn(`Unknown destination in <message to="${toName}">, dropping block`);
       scratchpadParts.push(`[dropped: unknown destination "${toName}"] ${body}`);
       continue;
     }
@@ -1052,7 +1051,7 @@ export function dispatchResultText(
     // harness-tag artifacts stripped by sanitization) goes to the scratchpad
     // log instead of writing an empty chat row.
     if (!body) {
-      log(`Empty <message to="${toName}"> body after sanitization — not delivered`);
+      log.warn(`Empty <message to="${toName}"> body after sanitization — not delivered`);
       scratchpadParts.push(`[not delivered — empty after sanitization; to="${toName}"]`);
       continue;
     }
@@ -1065,9 +1064,9 @@ export function dispatchResultText(
     // and the retry streams through the mid-turn door.
     if (options?.suppressDelivery) {
       if (options.turnDelivered) {
-        log(`<message to="${toName}"> in final result after a same-turn delivery — repeat, result door does not send`);
+        log.info(`<message to="${toName}"> in final result after a same-turn delivery — repeat, result door does not send`);
       } else {
-        log(`<message to="${toName}"> in final result but nothing was delivered this turn — nudging for a mid-turn resend`);
+        log.info(`<message to="${toName}"> in final result but nothing was delivered this turn — nudging for a mid-turn resend`);
         scratchpadParts.push(`[not delivered — the result door does not send; to="${toName}"] ${body}`);
       }
       continue;
@@ -1082,7 +1081,7 @@ export function dispatchResultText(
   const scratchpad = stripInternalTags(scratchpadParts.join(''));
 
   if (scratchpad) {
-    log(`[scratchpad] ${scratchpad.slice(0, 500)}${scratchpad.length > 500 ? '…' : ''}`);
+    log.info(`[scratchpad] ${scratchpad.slice(0, 500)}${scratchpad.length > 500 ? '…' : ''}`);
   }
 
   // In a task run, plain final text is the NORMAL ending (it becomes the run
@@ -1093,7 +1092,7 @@ export function dispatchResultText(
   const anythingDelivered = options?.suppressDelivery ? options.turnDelivered === true : sent > 0;
   const hasUnwrapped = !routing.taskRun && !anythingDelivered && !!scratchpad;
   if (hasUnwrapped) {
-    log(`WARNING: agent output had no <message to="..."> blocks — nothing was sent`);
+    log.warn(`agent output had no <message to="..."> blocks — nothing was sent`);
   }
   return { sent, hasUnwrapped, taskBlocks, resultBlocks };
 }
@@ -1153,7 +1152,7 @@ export function autoAppendTaskLog(text: string): void {
     kind: 'task_log',
     content: JSON.stringify({ text: line }),
   });
-  log('Task run log auto-appended from final text');
+  log.info('Task run log auto-appended from final text');
 }
 
 function sendToDestination(dest: DestinationEntry, body: string, routing: RoutingContext): void {
@@ -1194,7 +1193,7 @@ function resolveDestinationThread(
       .get(channelType, platformId) as { thread_id: string | null; id: string } | undefined;
     if (row) return { threadId: row.thread_id, inReplyTo: row.id };
   } catch (err) {
-    log(`resolveDestinationThread error: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn(`resolveDestinationThread error: ${err instanceof Error ? err.message : String(err)}`);
   }
   return null;
 }

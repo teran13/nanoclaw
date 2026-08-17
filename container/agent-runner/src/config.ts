@@ -8,6 +8,9 @@
 import fs from 'fs';
 
 import type { McpServerConfig } from './providers/types.js';
+import { createLogger } from './log.js';
+
+const log = createLogger('config');
 
 const CONFIG_PATH = '/workspace/agent/container.json';
 
@@ -37,7 +40,7 @@ export function loadConfig(): RunnerConfig {
   try {
     raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   } catch {
-    console.error(`[config] Failed to read ${CONFIG_PATH}, using defaults`);
+    log.warn(`Failed to read ${CONFIG_PATH}, using defaults`);
   }
 
   _config = {
