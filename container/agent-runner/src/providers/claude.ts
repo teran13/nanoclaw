@@ -65,6 +65,41 @@ export function classifyRateLimitEvent(
   };
 }
 
+export interface SdkMcpServerStatus {
+  name?: string;
+  status?: string;
+}
+
+/**
+ * The MCP servers the SDK did NOT bring up, from the init message's
+ * `mcp_servers` roster.
+ *
+ * A server that fails to spawn or connect (bad command, missing runtime dep,
+ * crash on startup) takes its tools with it and nothing else says so: the SDK
+ * runs the turn on the tools that did come up, and a model asked to use one of
+ * the missing ones can answer as though it had (#2968). The roster is the only
+ * report we get, and it arrives once, at init.
+ *
+ * `status` is a bare string in the SDK types, so 'connected' is the only value
+ * read as healthy — an unfamiliar status is reported rather than assumed fine,
+ * and an entry with no status at all is reported as 'unknown'. Malformed
+ * payloads yield nothing: this is a diagnostic, never a reason to fail a turn.
+ */
+export function unconnectedMcpServers(servers: unknown): Array<{ name: string; status: string }> {
+  if (!Array.isArray(servers)) return [];
+  const out: Array<{ name: string; status: string }> = [];
+  for (const entry of servers) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { name, status } = entry as SdkMcpServerStatus;
+    if (typeof status === 'string' && status.trim().toLowerCase() === 'connected') continue;
+    out.push({
+      name: typeof name === 'string' && name ? name : '(unnamed)',
+      status: typeof status === 'string' && status.trim() ? status.trim() : 'unknown',
+    });
+  }
+  return out;
+}
+
 // Deferred SDK builtins that either sidestep nanoclaw's own scheduling or
 // don't fit our async message-passing model (they're designed for Claude
 // Code's interactive UI and would hang here).
@@ -594,6 +629,17 @@ export class ClaudeProvider implements AgentProvider {
         yield { type: 'activity' };
 
         if (message.type === 'system' && message.subtype === 'init') {
+          // The one report we get on whether the configured MCP servers came
+          // up. Silence here is a capability loss the operator can't see, so
+          // name the missing ones — the turn proceeds either way.
+          const missing = unconnectedMcpServers((message as { mcp_servers?: unknown }).mcp_servers);
+          if (missing.length > 0) {
+            log(
+              `ERROR: MCP server${missing.length > 1 ? 's' : ''} not connected: ` +
+                `${missing.map((s) => `${s.name} (${s.status})`).join(', ')} — ` +
+                'their tools are unavailable for this session.',
+            );
+          }
           yield { type: 'init', continuation: message.session_id };
         } else if (message.type === 'assistant') {
           // Surface each assistant message's text as it streams in. The final

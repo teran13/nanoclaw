@@ -196,6 +196,7 @@ SDK message (so the idle timer stays honest) and maps recognized messages to `Pr
 - **PreToolUse hook** records the current tool + its declared timeout to `container_state` (so the host sweep widens its stuck tolerance while a long Bash runs) and, as defense-in-depth, blocks any `SDK_DISALLOWED_TOOLS` call that slips through. It does **not** sanitize bash env vars — there is no such hook.
 - **PostToolUse / PostToolUseFailure** hooks clear the in-flight tool
 - **PreCompact** hook archives the transcript to `conversations/` before compaction
+- The `system`/`init` message carries the SDK's `mcp_servers: [{ name, status }]` roster — the only report on whether the configured MCP servers actually came up. `unconnectedMcpServers()` picks out everything not `connected` and the provider logs them by name; a server that failed to spawn takes its tools with it, the turn runs anyway, and a model asked to use a missing tool can answer as though it had (#2968). Only `connected` counts as healthy: an unfamiliar status is reported, never assumed fine.
 - `maybeRotateContinuation` drops an oversized/aged transcript (default caps 12 MB / 14 days, both operator-overridable) so a cold container isn't killed reloading days of `.jsonl` before the host idle ceiling; `isSessionInvalid` clears a continuation whose transcript is gone
 - `additionalDirectories` for multi-directory access
 
