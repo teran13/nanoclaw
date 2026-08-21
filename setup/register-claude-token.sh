@@ -24,6 +24,15 @@ set -euo pipefail
 SECRET_NAME="${SECRET_NAME:-Anthropic}"
 HOST_PATTERN="${HOST_PATTERN:-api.anthropic.com}"
 
+# An onecli (or claude) installed into ~/.local/bin earlier in this same setup
+# run is invisible to a freshly spawned shell, so the guards below would call an
+# installed CLI missing; setup/registry-login.sh repairs PATH the same way. This
+# has to happen before the first `command -v`, not after one of them fails.
+if [ -d "$HOME/.local/bin" ] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+hash -r 2>/dev/null || true
+
 command -v onecli >/dev/null \
   || { echo "onecli not found. Install it first (see /setup §4)." >&2; exit 1; }
 
@@ -38,11 +47,8 @@ if ! command -v claude >/dev/null 2>&1; then
     echo "and re-run setup." >&2
     exit 1
   fi
-  # install-claude.sh PATH additions are scoped to its own subshell; redo
-  # them here so the rest of this script can see the fresh `claude` binary.
-  if [ -d "$HOME/.local/bin" ] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-    export PATH="$HOME/.local/bin:$PATH"
-  fi
+  # install-claude.sh installs into ~/.local/bin, already on PATH from above;
+  # only the command-lookup cache needs clearing for the fresh binary to resolve.
   hash -r 2>/dev/null || true
 fi
 
