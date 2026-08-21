@@ -72,6 +72,7 @@ vi.mock('../lib/registry-state.js', () => ({
 vi.mock('../lib/runner.js', () => ({ ensureAnswer: <T>(answer: T): T => answer }));
 vi.mock('../lib/theme.js', () => ({ wrapForGutter: (message: string): string => message }));
 
+import { gitShowToFile } from '../../scripts/skill-apply.js';
 import {
   PROVISIONING_MODULE,
   loadProvisioningCore,
@@ -186,9 +187,11 @@ describe('provisioning-core bootstrap', () => {
       'git remote',
       'git ls-remote --heads origin channels',
       'git fetch origin channels',
-      `git show origin/channels:${PROVISIONING_MODULE} > ${PROVISIONING_MODULE}`,
+      // the engine's staged copy rather than a bare redirect: a git show that fails
+      // must not leave a 0-byte stub for the next run to import as the core
+      gitShowToFile('origin/channels', PROVISIONING_MODULE, PROVISIONING_MODULE),
     ]);
-    // the parent directory exists before the git show redirect runs
+    // the parent directory exists before the copy runs
     expect(fs.existsSync(path.join(root, 'src/provisioning'))).toBe(true);
     expect(importModule).toHaveBeenCalledExactlyOnceWith(pathToFileURL(path.join(root, PROVISIONING_MODULE)).href);
   });

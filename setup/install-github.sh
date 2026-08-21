@@ -29,7 +29,13 @@ echo "STEP: fetch-channels-branch"
 git fetch origin channels
 
 echo "STEP: copy-files"
-git show origin/channels:src/channels/github.ts > src/channels/github.ts
+# `> dest` truncates before git runs, so a git show that fails (branch gone,
+# path not in the ref) would leave a 0-byte src/channels/github.ts behind — and
+# the file-present check above reads that stub as an installed adapter on the
+# next run. Stage alongside the destination and move it in only on success.
+git show origin/channels:src/channels/github.ts > src/channels/github.ts.nc-tmp \
+  || { rm -f src/channels/github.ts.nc-tmp; exit 1; }
+mv src/channels/github.ts.nc-tmp src/channels/github.ts
 
 echo "STEP: register-import"
 if ! grep -q "import './github.js';" src/channels/index.ts; then

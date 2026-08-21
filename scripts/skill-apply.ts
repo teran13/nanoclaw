@@ -90,6 +90,16 @@ const VAR_REF = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 const destOf = (line: string) => (line.includes('->') ? line.split('->')[1].trim() : line.trim());
 const srcOf = (line: string) => (line.includes('->') ? line.split('->')[0].trim() : line.trim());
 
+// `git show <ref>:<src> > <dest>` opens and empties dest before git runs, so a
+// git that then fails — ref missing, path not in the ref, network — leaves a
+// 0-byte stub where a real file was, and a retry reads the stub as if it were
+// the payload. Stage into a sibling temp file (same directory, so the move is a
+// rename, not a copy) and only put it in place on a zero exit; on failure drop
+// the temp and report the failure, leaving dest exactly as it was.
+// Exported because setup/channels/slack-auto.ts copies out of a ref the same way.
+export const gitShowToFile = (ref: string, src: string, dest: string): string =>
+  `git show ${ref}:${src} > ${dest}.nc-tmp && mv ${dest}.nc-tmp ${dest} || { rm -f ${dest}.nc-tmp; false; }`;
+
 function fileHasLine(root: string, rel: string, line: string): boolean {
   return read(join(root, rel))
     .split('\n')
@@ -656,7 +666,7 @@ async function applyOne(
           // may not exist on trunk (e.g. container skills that live only on
           // the channels branch). Mirror the local-copy path's mkdir.
           mkdirSync(dirname(join(root, destOf(l))), { recursive: true });
-          await exec(`git show ${remote}/${b}:${srcOf(l)} > ${destOf(l)}`);
+          await exec(gitShowToFile(`${remote}/${b}`, srcOf(l), destOf(l)));
         }
       } else {
         for (const l of d.body) {

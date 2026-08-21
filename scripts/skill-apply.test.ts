@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,6 +9,7 @@ import {
   planSkill,
   fullyApplied,
   firstFailureHint,
+  gitShowToFile,
   referenceProse,
   stepLabel,
   type ApplyEvent,
@@ -190,7 +192,7 @@ describe('apply engine lifecycle', () => {
 
 // from-branch copy: the dest may live only on the registry branch (e.g. a
 // container skill trunk no longer ships), so the engine must create the
-// parent directory itself — the shell redirect in `git show src > dest` can't.
+// parent directory itself — the shell redirect in the copy command can't.
 const FROM_BRANCH_SKILL = `# from-branch demo
 
 ## Pull the formatting skill from the channels branch
@@ -211,21 +213,111 @@ describe('from-branch copy apply path', () => {
     const { cmds, exec } = recordingExec();
     const res = await applySkill(fskill, froot, { exec, resolveRemote: () => 'origin' });
 
-    // the redirect target's parent now exists, so the exec'd `git show … > dest`
+    // the write target's parent now exists, so the exec'd git-show copy
     // (mocked here) would not fail with ENOENT on a real run
     expect(existsSync(join(froot, 'container/skills/demo-formatting'))).toBe(true);
     expect(cmds).toContain('git fetch origin channels');
-    expect(
-      cmds.some((c) =>
-        /^git show origin\/channels:container\/skills\/demo-formatting\/SKILL\.md > container\/skills\/demo-formatting\/SKILL\.md$/.test(
-          c,
-        ),
-      ),
-    ).toBe(true);
+    const rel = 'container/skills/demo-formatting/SKILL.md';
+    expect(cmds).toContain(gitShowToFile('origin/channels', rel, rel));
     expect(res.journal).toContainEqual({ op: 'wrote', path: 'container/skills/demo-formatting/SKILL.md' });
 
     rmSync(fskill, { recursive: true, force: true });
     rmSync(froot, { recursive: true, force: true });
+  });
+});
+
+// from-branch copy over real git: `git show ref:src > dest` opens and empties
+// dest before git runs, so a git that then fails (ref missing, path not in the
+// ref, network) leaves a 0-byte stub where a real file was. The copy must be
+// all-or-nothing — on failure the destination keeps whatever it already had.
+const MISSING_ON_BRANCH_SKILL = `# from-branch demo
+
+## Pull a file the branch does not carry
+\`\`\`nc:copy from-branch:channels
+src/channels/dial.ts
+\`\`\`
+`;
+const PRESENT_ON_BRANCH_SKILL = `# from-branch demo
+
+## Pull a file the branch does carry
+\`\`\`nc:copy from-branch:channels
+src/channels/present.ts
+\`\`\`
+`;
+
+describe('from-branch copy against a real git ref', () => {
+  let origin: string;
+  let froot: string;
+  // -c rather than `git config`: the repos are throwaway, and identity must not
+  // depend on whatever the ambient user config happens to be.
+  const git = (cwd: string, args: string) =>
+    execSync(`git -c user.email=t@example.invalid -c user.name=Test ${args}`, { cwd, stdio: 'ignore' });
+  const realExec = (c: string) => void execSync(c, { cwd: froot, stdio: ['ignore', 'pipe', 'ignore'] });
+
+  beforeEach(() => {
+    origin = mkdtempSync(join(tmpdir(), 'nc-origin-'));
+    froot = mkdtempSync(join(tmpdir(), 'nc-proj-git-'));
+
+    git(origin, 'init -q -b channels');
+    mkdirSync(join(origin, 'src/channels'), { recursive: true });
+    writeFileSync(join(origin, 'src/channels/present.ts'), 'export const onBranch = true;\n');
+    git(origin, 'add -A');
+    git(origin, 'commit -qm seed');
+    // src/channels/dial.ts deliberately never committed to the branch
+
+    git(froot, 'init -q');
+    git(froot, `remote add origin ${origin}`);
+    mkdirSync(join(froot, 'src/channels'), { recursive: true });
+    writeFileSync(join(froot, '.env'), '');
+    writeFileSync(join(froot, 'package.json'), '{"name":"scratch"}');
+  });
+
+  afterEach(() => {
+    rmSync(origin, { recursive: true, force: true });
+    rmSync(froot, { recursive: true, force: true });
+  });
+
+  it('leaves an existing destination untouched when the path is not in the ref', async () => {
+    const dest = join(froot, 'src/channels/dial.ts');
+    const original = 'export const dial = "the real file";\n';
+    writeFileSync(dest, original);
+
+    const fskill = mkdtempSync(join(tmpdir(), 'nc-skill-git-'));
+    writeFileSync(join(fskill, 'SKILL.md'), MISSING_ON_BRANCH_SKILL);
+    // refresh: presence is not currency, so the copy runs over the existing file
+    const res = await applySkill(fskill, froot, { mode: 'refresh', exec: realExec, resolveRemote: () => 'origin' });
+
+    // the step is expected to fail — that is the condition under test
+    expect(res.agentTasks).toHaveLength(1);
+    // …but a failed copy must not have eaten the file it was copying over
+    expect(readFileSync(dest, 'utf8')).toBe(original);
+
+    rmSync(fskill, { recursive: true, force: true });
+  });
+
+  it('leaves no 0-byte stub when the destination did not exist', async () => {
+    const fskill = mkdtempSync(join(tmpdir(), 'nc-skill-git-'));
+    writeFileSync(join(fskill, 'SKILL.md'), MISSING_ON_BRANCH_SKILL);
+    const res = await applySkill(fskill, froot, { exec: realExec, resolveRemote: () => 'origin' });
+
+    expect(res.agentTasks).toHaveLength(1);
+    // a stub here is worse than nothing: a retry reads it as the real file
+    expect(existsSync(join(froot, 'src/channels/dial.ts'))).toBe(false);
+    expect(readdirSync(join(froot, 'src/channels'))).toEqual([]);
+
+    rmSync(fskill, { recursive: true, force: true });
+  });
+
+  it('writes the branch content and leaves no temp file behind on success', async () => {
+    const fskill = mkdtempSync(join(tmpdir(), 'nc-skill-git-'));
+    writeFileSync(join(fskill, 'SKILL.md'), PRESENT_ON_BRANCH_SKILL);
+    const res = await applySkill(fskill, froot, { exec: realExec, resolveRemote: () => 'origin' });
+
+    expect(res.agentTasks).toHaveLength(0);
+    expect(readFileSync(join(froot, 'src/channels/present.ts'), 'utf8')).toBe('export const onBranch = true;\n');
+    expect(readdirSync(join(froot, 'src/channels'))).toEqual(['present.ts']);
+
+    rmSync(fskill, { recursive: true, force: true });
   });
 });
 
