@@ -32,13 +32,16 @@
  * If one or more accounts are already linked (discovered via
  * `signal-cli -o json listAccounts`), the step emits SIGNAL_AUTH
  * STATUS=skipped with the first account so the driver can reuse it.
- * Selecting a different existing account is a driver concern.
+ * Selecting a different existing account is a driver concern. If that probe
+ * cannot get an answer at all — another signal-cli holds the config lock — the
+ * step fails with that reason rather than guessing that nothing is linked.
  */
 import { spawn, spawnSync } from 'child_process';
 
 import { emitStatus } from './status.js';
 
 const LINK_TIMEOUT_MS = 180_000;
+const LIST_ACCOUNTS_TIMEOUT_MS = 10_000;
 const DEFAULT_DEVICE_NAME = 'NanoClaw';
 
 interface SignalAccount {
@@ -47,6 +50,20 @@ interface SignalAccount {
   registered?: boolean;
 }
 
+/**
+ * Outcome of the listAccounts probe. `ok: false` is reserved for the one
+ * failure that must not be read as "no accounts linked": signal-cli couldn't
+ * take the exclusive lock on its config within the timeout, so what it would
+ * have reported is unknown. Everything else stays soft — an absent binary or
+ * unparseable output means no accounts, same as before.
+ */
+export type AccountsProbe =
+  | { ok: true; accounts: string[] }
+  | { ok: false; reason: 'config-locked' };
+
+export const CONFIG_LOCKED_ERROR =
+  'signal-cli config is locked by another process (usually the running NanoClaw service). Stop it, then re-run setup.';
+
 function cliPath(): string {
   return process.env.SIGNAL_CLI_PATH || 'signal-cli';
 }
@@ -54,22 +71,40 @@ function cliPath(): string {
 /**
  * Query signal-cli for currently linked accounts. Empty array if none
  * configured, no binary, or the call fails for any other reason.
+ *
+ * Bounded, because signal-cli holds an exclusive lock on its config file and
+ * blocks — with no output and no exit — for as long as another instance holds
+ * it. Setup starts the NanoClaw service before it gets here, and the service
+ * runs `signal-cli … daemon`, so on any re-run of a host that already has
+ * Signal wired this call is the one that never returns. A hit on the bound is
+ * reported as `config-locked` rather than as an empty list: "we could not ask"
+ * and "nothing is linked" lead to opposite decisions in run().
  */
-function listAccounts(): string[] {
+export function listAccounts(timeoutMs: number = LIST_ACCOUNTS_TIMEOUT_MS): AccountsProbe {
   const cli = cliPath();
   try {
     const res = spawnSync(cli, ['-o', 'json', 'listAccounts'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: timeoutMs,
     });
-    if (res.status !== 0) return [];
+    // A timeout arrives as ETIMEDOUT plus the kill signal, and leaves `status`
+    // null — which the plain `status !== 0` test below cannot tell apart from
+    // a signal-cli that answered "no".
+    if ((res.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+      return { ok: false, reason: 'config-locked' };
+    }
+    if (res.status !== 0) return { ok: true, accounts: [] };
     const parsed = JSON.parse(res.stdout || '[]') as SignalAccount[];
-    return parsed
-      .filter((a) => a.registered !== false)
-      .map((a) => a.number ?? a.account ?? '')
-      .filter(Boolean);
+    return {
+      ok: true,
+      accounts: parsed
+        .filter((a) => a.registered !== false)
+        .map((a) => a.number ?? a.account ?? '')
+        .filter(Boolean),
+    };
   } catch {
-    return [];
+    return { ok: true, accounts: [] };
   }
 }
 
@@ -100,7 +135,10 @@ function printLink(url: string): void {
   });
 }
 
-export async function run(_args: string[]): Promise<void> {
+export async function run(
+  _args: string[],
+  readAccounts: (timeoutMs?: number) => AccountsProbe = listAccounts,
+): Promise<void> {
   const cli = cliPath();
 
   // Verify signal-cli exists before we commit to the long-running link.
@@ -116,11 +154,15 @@ export async function run(_args: string[]): Promise<void> {
     return;
   }
 
-  const existing = listAccounts();
-  if (existing.length > 0) {
+  const existing = readAccounts();
+  if (!existing.ok) {
+    emitStatus('SIGNAL_AUTH', { STATUS: 'failed', ERROR: CONFIG_LOCKED_ERROR });
+    return;
+  }
+  if (existing.accounts.length > 0) {
     emitStatus('SIGNAL_AUTH', {
       STATUS: 'skipped',
-      ACCOUNT: existing[0],
+      ACCOUNT: existing.accounts[0],
       REASON: 'already-authenticated',
     });
     return;
@@ -193,12 +235,16 @@ export async function run(_args: string[]): Promise<void> {
       // account shows up in listAccounts. Use that as the source of truth
       // rather than scraping stdout — more robust across signal-cli versions.
       if (code === 0) {
-        const post = listAccounts();
-        if (post.length === 0) {
+        const post = readAccounts();
+        if (!post.ok) {
+          finish({ STATUS: 'failed', ERROR: CONFIG_LOCKED_ERROR }, 1);
+          return;
+        }
+        if (post.accounts.length === 0) {
           finish({ STATUS: 'failed', ERROR: 'link exited 0 but no account registered' }, 1);
           return;
         }
-        finish({ STATUS: 'success', ACCOUNT: post[0] }, 0);
+        finish({ STATUS: 'success', ACCOUNT: post.accounts[0] }, 0);
         return;
       }
 
