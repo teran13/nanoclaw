@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
-import { getInboundDb, getOutboundDb, initTestSessionDb } from './connection.js';
+import { closeSessionDb, getInboundDb, getOutboundDb, initTestSessionDb } from '../mailbox/sqlite/connection.js';
 import { getMessageIdBySeq, stripAgentGroupSuffix } from './messages-out.js';
 
 const GROUP = 'ag-1111111111111-aaaaaa';
@@ -17,6 +17,10 @@ function seedInbound(id: string, seq: number): void {
 
 beforeEach(() => {
   initTestSessionDb();
+});
+
+afterEach(() => {
+  closeSessionDb();
 });
 
 describe('stripAgentGroupSuffix', () => {
@@ -36,21 +40,15 @@ describe('stripAgentGroupSuffix', () => {
 
   it('leaves an id suffixed with a different group alone', () => {
     const other = 'ag-2222222222222-bbbbbb';
-    expect(stripAgentGroupSuffix(`1234567890.123456:${other}`, GROUP)).toBe(
-      `1234567890.123456:${other}`,
-    );
+    expect(stripAgentGroupSuffix(`1234567890.123456:${other}`, GROUP)).toBe(`1234567890.123456:${other}`);
   });
 
   it('does nothing when the group id is unknown, rather than guessing', () => {
-    expect(stripAgentGroupSuffix(`1234567890.123456:${GROUP}`, '')).toBe(
-      `1234567890.123456:${GROUP}`,
-    );
+    expect(stripAgentGroupSuffix(`1234567890.123456:${GROUP}`, '')).toBe(`1234567890.123456:${GROUP}`);
   });
 
   it('only strips at the end — a group id appearing mid-id is left in place', () => {
-    expect(stripAgentGroupSuffix(`${GROUP}:1234567890.123456`, GROUP)).toBe(
-      `${GROUP}:1234567890.123456`,
-    );
+    expect(stripAgentGroupSuffix(`${GROUP}:1234567890.123456`, GROUP)).toBe(`${GROUP}:1234567890.123456`);
   });
 });
 
