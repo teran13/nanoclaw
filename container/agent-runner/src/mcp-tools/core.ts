@@ -92,7 +92,7 @@ export const sendMessage: McpToolDefinition = {
     if ('error' in routing) return err(routing.error);
 
     const id = generateId();
-    const seq = writeMessageOut({
+    const seq = await writeMessageOut({
       id,
       in_reply_to: getCurrentInReplyTo(),
       kind: 'chat',
@@ -141,7 +141,7 @@ export const sendFile: McpToolDefinition = {
     fs.mkdirSync(outboxDir, { recursive: true });
     fs.copyFileSync(resolvedPath, path.join(outboxDir, filename));
 
-    writeMessageOut({
+    await writeMessageOut({
       id,
       in_reply_to: getCurrentInReplyTo(),
       kind: 'chat',
@@ -183,7 +183,7 @@ export const editMessage: McpToolDefinition = {
     }
 
     const id = generateId();
-    writeMessageOut({
+    await writeMessageOut({
       id,
       kind: 'chat',
       platform_id: routing.platform_id,
@@ -224,7 +224,7 @@ export const addReaction: McpToolDefinition = {
     }
 
     const id = generateId();
-    writeMessageOut({
+    await writeMessageOut({
       id,
       kind: 'chat',
       platform_id: routing.platform_id,

@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { MessageInRow } from '../db/messages-in.js';
-import { touchHeartbeat } from '../db/connection.js';
+import { touchHeartbeat } from '../heartbeat.js';
 import { createLogger } from '../log.js';
 
 const SCRIPT_TIMEOUT_MS = 30_000;
