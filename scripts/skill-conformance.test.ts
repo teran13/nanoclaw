@@ -186,6 +186,21 @@ describe('retired mechanisms', () => {
     const offenders = SKILL_DOCS.filter((d) => d.text.includes('data/env')).map((d) => d.doc);
     expect(offenders).toEqual([]);
   });
+
+  it('no skill doc copies container skills into a session directory', () => {
+    // container/skills/ is a read-only mount, and each group's
+    // .claude-shared/skills/ holds symlinks into it that are re-synced at every
+    // spawn (syncSkillSymlinks). A copy there plants a real directory, which the
+    // sync refuses to replace — it warns and skips, pinning that group to the
+    // copy for good. #3050 dropped the loop from add-dial-tool; this catches the
+    // next one, since prose plus a bash block is invisible to validate().
+    // Session-scoped settings.json edits are a different thing and stay legal:
+    // the host does not manage that file.
+    const offenders = SKILL_DOCS.filter((d) =>
+      d.text.split('\n').some((l) => l.includes('.claude-shared/skills') && /\b(rsync|cp|install|rm)\b/.test(l)),
+    ).map((d) => d.doc);
+    expect(offenders).toEqual([]);
+  });
 });
 
 describe.each(SKILLS)('%s', (name) => {

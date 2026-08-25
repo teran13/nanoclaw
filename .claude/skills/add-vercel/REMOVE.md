@@ -4,13 +4,10 @@ Every step is idempotent — safe to re-run. Steps delete the files and config t
 
 ## 1. Remove the container skill
 
-Delete the copied container skill and its per-group session copies:
+`container/skills/` is a read-only mount; the per-group `.claude-shared/skills/` symlink to it is pruned automatically on the next spawn:
 
 ```bash
 rm -rf container/skills/vercel-cli
-for session_dir in data/v2-sessions/ag-*; do
-  rm -rf "$session_dir/.claude-shared/skills/vercel-cli"
-done
 ```
 
 ## 2. Remove the dependency guard test
@@ -39,10 +36,10 @@ fi
 Remove the `vercel` entry from `container/cli-tools.json` — this skill added it, and it is
 not part of the base image. Then `./container/build.sh` so the image matches the manifest.
 
-## 5. Restart running containers
+## 5. Restart the agents
 
-So sessions stop loading the removed `vercel-cli` skill on next wake:
+So sessions stop loading the removed `vercel-cli` skill — each group comes back on its next message:
 
 ```bash
-docker ps --filter label=nanoclaw-session -q | xargs -r docker stop
+ncl groups list --json | jq -r '.data[].id' | while read -r gid; do ncl groups restart --id "$gid"; done
 ```
