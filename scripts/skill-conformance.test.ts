@@ -375,3 +375,124 @@ describe.each(SKILLS)('%s', (name) => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Prompt answers that reach a shell.
+// ---------------------------------------------------------------------------
+
+// An nc:run body goes through `bash -c`, so a {{var}} in one is text spliced
+// into a command line — not an argument handed to a process. The only thing
+// between what the operator types and that line is the prompt's `validate:`
+// regex, so a regex admitting a character that escapes the substitution's
+// quoting context is the gate failing open: an ordinary answer corrupts the
+// command (o'brien@x.com inside single quotes) and a crafted one appends a
+// second. 62d69bfd fixed that class for the rendered group list by lifting the
+// value out of the shell; where the value *is* the command's argument there is
+// nowhere to lift it to, and the regex carries the weight alone.
+
+// Which characters bite depends on where the {{var}} sits on the line.
+const SHELL_ESCAPES = {
+  bare: [' ', '\t', "'", '"', '`', '$', ';', '&', '|', '<', '>', '(', ')', '\\'],
+  single: ["'"], // '…' is literal through to the closing quote; only that ends it
+  double: ['"', '`', '$', '\\'], // "…" still expands $(…) and `…`
+} as const;
+
+type Quoting = keyof typeof SHELL_ESCAPES;
+
+// Shell quoting state at `index`, scanning the line the way bash reads it.
+function quotingAt(line: string, index: number): Quoting {
+  let ctx: Quoting = 'bare';
+  for (let i = 0; i < index; i++) {
+    const ch = line[i];
+    if (ctx === 'single') {
+      if (ch === "'") ctx = 'bare';
+    } else if (ch === '\\') {
+      i++; // escapes the next character in bare and double alike
+    } else if (ctx === 'bare' && ch === "'") {
+      ctx = 'single';
+    } else if (ch === '"') {
+      ctx = ctx === 'double' ? 'bare' : 'double';
+    }
+  }
+  return ctx;
+}
+
+// A probe corpus, not a proof. These shapes are wide enough that a regex loose
+// enough to matter admits one of them; a regex that rejects all of them is not
+// thereby certified safe. It finds the class, which is what a lint can do.
+const PROBE_SHAPES = ['%', 'a%b', 'a%b@example.com', 'https://example.com/%', 'xoxb-a%b', 'ag-a%b', 'U1234567%'];
+
+// Pre-existing holes this lint found, left as they are. Each needs a decision
+// about what the value may legitimately contain — a product call on someone
+// else's skill, not a mechanical fix — and naming them here keeps them visible
+// instead of silently excluded. Keyed by skill/var so line drift cannot rot it.
+//
+//   add-imessage/owner_handle  the local-backend prompt takes an email through
+//     the same permissive shape as #3543, inside "…" where $(…) still expands.
+//   add-slack/bot_token        `^xoxb-` is anchored at the start only, so
+//   add-teams/public_url       `^https://` likewise — everything after the
+//                              prefix is unconstrained.
+//   add-whatsapp/agent_name    `^.+$` on a display name, inside '…'; tightening
+//                              it would refuse assistants named "Nano's".
+const SHELL_SPLICE_EXCEPTIONS = new Set([
+  'add-imessage/owner_handle',
+  'add-slack/bot_token',
+  'add-teams/public_url',
+  'add-whatsapp/agent_name',
+]);
+
+// The first escaping value this regex lets through in that quoting context.
+function admits(validate: string, ctx: Quoting): string | undefined {
+  const re = new RegExp(validate);
+  for (const ch of SHELL_ESCAPES[ctx]) {
+    for (const shape of PROBE_SHAPES) {
+      const probe = shape.split('%').join(ch);
+      if (re.test(probe)) return probe;
+    }
+  }
+  return undefined;
+}
+
+describe('prompt answers spliced into a shell', () => {
+  it('every validate: regex gating one rejects values that escape its quoting', () => {
+    const offenders: string[] = [];
+    for (const name of SKILLS) {
+      const directives = parseDirectives(readFileSync(join(SKILLS_DIR, name, 'SKILL.md'), 'utf8'));
+      // A var can be prompted more than once under different when: guards, and
+      // the run line cannot tell which answer it got — so every prompt for it
+      // has to hold, not just the strictest.
+      const prompts = new Map<string, Directive[]>();
+      for (const d of directives) {
+        if (d.kind !== 'prompt') continue;
+        const v = promptVar(d);
+        // A prompt with no validate: is out of scope here — whether reaching a
+        // shell should require one at all is a policy question, not a bug in a
+        // gate that exists. add-linear and add-resend both have unguarded
+        // prompts on shell lines today.
+        if (typeof v !== 'string' || !isString(d.attrs.validate)) continue;
+        prompts.set(v, [...(prompts.get(v) ?? []), d]);
+      }
+      for (const d of directives) {
+        if (d.kind !== 'run') continue;
+        d.body.forEach((line, i) => {
+          for (const m of line.matchAll(/\{\{(\w+)\}\}/g)) {
+            const varName = m[1] ?? '';
+            if (SHELL_SPLICE_EXCEPTIONS.has(`${name}/${varName}`)) continue;
+            const ctx = quotingAt(line, m.index ?? 0);
+            for (const p of prompts.get(varName) ?? []) {
+              // Both guarded, on different values: the run can never see this
+              // prompt's answer. Either one unguarded and it can.
+              if (isString(d.attrs.when) && isString(p.attrs.when) && d.attrs.when !== p.attrs.when) continue;
+              const probe = admits(String(p.attrs.validate), ctx);
+              if (probe === undefined) continue;
+              offenders.push(
+                `${name}/SKILL.md:${d.line + i + 1} {{${varName}}} ${ctx} admits ${JSON.stringify(probe)}`,
+              );
+            }
+          }
+        });
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
